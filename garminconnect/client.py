@@ -91,6 +91,15 @@ PORTAL_IMPERSONATIONS: tuple[str, ...] = (
 # -- Regex helpers for HTML parsing (widget flow) --
 _CSRF_RE = re.compile(r'name="_csrf"\s+value="(.+?)"')
 _TITLE_RE = re.compile(r"<title>(.+?)</title>")
+_PASSWORD_FIELD_RE = re.compile(
+    r"""<input[^>]*(?:name|type)\s*=\s*["']password["']""", re.IGNORECASE
+)
+
+
+def _is_signin_form(html: str) -> bool:
+    """True for the SSO sign-in form (re-rendered after a rejected password):
+    it has a password field and nothing about MFA anywhere on the page."""
+    return bool(_PASSWORD_FIELD_RE.search(html)) and "mfa" not in html.lower()
 
 
 def _random_browser_headers() -> dict[str, str]:
@@ -626,6 +635,16 @@ class Client:
         # mandatory on ECG-capable devices (e.g. Venu 4, Fenix 8), and the
         # previous literal "MFA"-only check locked those accounts out entirely.
         if "mfa" in title_lower or "authentication application" in title_lower:
+            # "GARMIN Authentication Application" is also the title of the
+            # sign-in form itself, which is what comes back when the password
+            # is rejected. A page that still asks for the password and never
+            # mentions MFA is that form, not a code challenge - without this
+            # a wrong password leaves the caller waiting for a code that was
+            # never sent.
+            if "mfa" not in title_lower and _is_signin_form(r.text):
+                raise GarminConnectAuthenticationError(
+                    "401 Unauthorized (Invalid Username or Password)"
+                )
             self._mfa_session = sess
             self._mfa_login_params = signin_params
             self._mfa_post_headers = {"Referer": r.url}

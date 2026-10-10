@@ -85,6 +85,47 @@ def test_mfa_titles_trigger_mfa(title):
     assert c._widget_last_resp is not None
 
 
+_SIGNIN_FORM = (
+    "<html><head><title>GARMIN Authentication Application</title></head><body>"
+    '<div class="error">Invalid sign in.</div>'
+    '<form><input name="username"/><input type="password" name="password"/>'
+    '<input name="_csrf" value="tok123"/></form></body></html>'
+)
+_EMAIL_CODE_FORM = (
+    "<html><head><title>GARMIN Authentication Application</title></head><body>"
+    '<form action="/sso/verifyMFA/loginEnterMfaCode"><input name="mfa-code"/>'
+    '<input name="_csrf" value="tok123"/></form></body></html>'
+)
+
+
+def test_rejected_password_is_not_mistaken_for_mfa():
+    """The sign-in form coming back under the generic title means the
+    password was rejected - not that a code is on its way."""
+    c = client_mod.Client()
+    with (
+        _widget_session(_SIGNIN_FORM),
+        pytest.raises(GarminConnectAuthenticationError, match="Invalid Username"),
+    ):
+        c._widget_web_login("e@x.com", "wrong")
+    assert getattr(c, "_mfa_flow", None) != "widget"
+
+
+def test_email_code_page_under_the_generic_title_is_still_mfa():
+    """Same title, but a code form: the email-MFA flow must keep working."""
+    c = client_mod.Client()
+    with _widget_session(_EMAIL_CODE_FORM), pytest.raises(_MFARequired):
+        c._widget_web_login("e@x.com", "pw")
+    assert c._mfa_flow == "widget"
+
+
+def test_signin_form_detection():
+    assert client_mod._is_signin_form(_SIGNIN_FORM)
+    assert not client_mod._is_signin_form(_EMAIL_CODE_FORM)
+    assert not client_mod._is_signin_form(_page("GARMIN Authentication Application"))
+    # a page that has a password field but mentions MFA is left to the MFA flow
+    assert not client_mod._is_signin_form(_SIGNIN_FORM.replace("Invalid sign in.", "Set up MFA"))
+
+
 def test_unexpected_title_still_errors():
     """A genuinely unknown page must NOT be misread as an MFA challenge."""
     c = client_mod.Client()
