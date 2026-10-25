@@ -212,6 +212,9 @@ class Client:
             pool_maxsize=kwargs.get("pool_maxsize", 20),
         )
         self._api_session.mount("https://", api_adapter)
+        # When the API session last sent a request (time.monotonic()); see
+        # API_IDLE_RESET_S in _run_request.
+        self._api_last_used: float = 0.0
 
         self._tokenstore_path: str | None = None
         # Set of strategy names to skip during login, e.g. {"mobile+cffi"}.
@@ -1309,9 +1312,21 @@ class Client:
         kwargs["headers"].update({"Accept": "*/*"})
         return self._run_request("GET", path, **kwargs).content
 
+    # Garmin closes keep-alive connections that sit idle; the first request
+    # after a long gap would go out on one already closed and fail with
+    # "Remote end closed connection without response" (then succeed on the
+    # retry, logging a warning each time). After this many idle seconds the
+    # pooled connections are dropped first, so that request opens a fresh one.
+    API_IDLE_RESET_S = 60.0
+
     def _run_request(self, method: str, path: str, **kwargs: Any) -> Any:
         if self.is_authenticated and self._token_expires_soon():
             self._refresh_session()
+
+        now = time.monotonic()
+        if self._api_last_used and now - self._api_last_used > self.API_IDLE_RESET_S:
+            self._api_session.close()   # the pools are emptied; the session keeps working
+        self._api_last_used = now
 
         url = f"{self._connectapi}/{path.lstrip('/')}"
 
